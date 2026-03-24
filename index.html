@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LSTM Quant Forecaster</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f0f13; color: #f5f6fa; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .container { background: #1e1e24; padding: 30px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.8); width: 100%; max-width: 1100px; border: 1px solid #2f3640; }
+        h1 { color: #00a8ff; text-align: center; margin-bottom: 5px; letter-spacing: 1px; }
+        p.subtitle { text-align: center; color: #7f8fa6; margin-bottom: 30px; font-size: 14px; }
+        
+        /* NEW: Timeframe Select Styling */
+        .controls-wrapper { display: flex; gap: 15px; justify-content: center; margin-bottom: 25px; align-items: center; flex-wrap: wrap;}
+        input[type="file"], select { padding: 10px; border: 1px solid #353b48; border-radius: 6px; color: #dcdde1; background: #2f3640; cursor: pointer; font-family: inherit;}
+        button { background-color: #00a8ff; color: white; border: none; padding: 10px 24px; border-radius: 6px; cursor: pointer; font-size: 15px; font-weight: 600; transition: 0.3s; }
+        button:hover { background-color: #0097e6; box-shadow: 0 0 10px rgba(0, 168, 255, 0.4); }
+        
+        #loader { display: none; text-align: center; color: #e1b12c; margin-bottom: 20px; font-weight: 600; line-height: 1.5; }
+        .live-timer { font-family: monospace; font-size: 1.3em; color: #00a8ff; }
+        .chart-container { position: relative; height: 500px; width: 100%; margin-bottom: 20px; }
+        
+        .ai-summary-card { display: none; background: rgba(47, 54, 64, 0.6); border-left: 5px solid #00a8ff; padding: 20px; border-radius: 8px; margin-top: 20px; line-height: 1.6; font-size: 16px; }
+        .ai-title { font-size: 14px; color: #00a8ff; text-transform: uppercase; font-weight: 700; margin-bottom: 8px; }
+        .metrics-row { display: flex; justify-content: space-between; margin-top: 15px; font-size: 14px; color: #7f8fa6; border-top: 1px solid #353b48; padding-top: 15px;}
+        .time-metric { color: #e1b12c; font-family: monospace; font-size: 1.1em;}
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1> Neural Quant Terminal</h1>
+        <p class="subtitle">Recursive 1-Year Forecasting & Epistemic Risk Analysis</p>
+
+        <div class="controls-wrapper">
+            <input type="file" id="fileInput" accept=".csv, .txt">
+            <select id="timePeriod">
+                <option value="max">Whole Dataset (Max)</option>
+                <option value="5y">Last 5 Years</option>
+                <option value="3y">Last 3 Years</option>
+                <option value="1y">Last 1 Year</option>
+            </select>
+            <button onclick="runPrediction()">Generate Inference</button>
+        </div>
+
+        <div id="loader">
+            Running Historical Inference & 1-Year Recursive Future Forecast...<br>
+            <span id="liveTimer" class="live-timer">0.00s</span>
+        </div>
+        
+        <div class="chart-container">
+            <canvas id="predictionChart"></canvas>
+        </div>
+
+        <div id="aiSummaryBox" class="ai-summary-card">
+            <div class="ai-title"> 1-Year Future Outlook</div>
+            <div id="aiText"></div>
+            <div class="metrics-row">
+                <span id="rmseMetric"></span>
+                <span id="timeMetric" class="time-metric"></span>
+                <span>Future Horizon: 365 Days</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let stockChart = null;
+        let timerInterval = null;
+
+        async function runPrediction() {
+            const fileInput = document.getElementById('fileInput');
+            const timePeriod = document.getElementById('timePeriod').value;
+            const loader = document.getElementById('loader');
+            const summaryBox = document.getElementById('aiSummaryBox');
+            const liveTimerElement = document.getElementById('liveTimer');
+            
+            if (fileInput.files.length === 0) { alert("Please select a data file."); return; }
+
+            loader.style.display = 'block';
+            summaryBox.style.display = 'none'; 
+            
+            const startTime = performance.now();
+            timerInterval = setInterval(() => {
+                const elapsed = (performance.now() - startTime) / 1000;
+                liveTimerElement.innerText = elapsed.toFixed(2) + 's';
+            }, 50);
+
+            const formData = new FormData();
+            formData.append("file", fileInput.files[0]);
+            formData.append("period", timePeriod); // Send timeframe to backend
+
+            try {
+                const response = await fetch("/predict", { method: "POST", body: formData });
+                const data = await response.json();
+                
+                if (!response.ok) throw new Error(data.error || "Server error");
+                
+                clearInterval(timerInterval);
+                const totalSeconds = ((performance.now() - startTime) / 1000).toFixed(2);
+                
+                drawChart(data);
+                
+                document.getElementById('aiText').innerHTML = data.ai_summary;
+                document.getElementById('rmseMetric').innerHTML = ` Historical RMSE: $${data.rmse.toFixed(2)}`;
+                document.getElementById('timeMetric').innerHTML = ` Inference Time: ${totalSeconds}s`;
+                summaryBox.style.display = 'block';
+
+            } catch (error) {
+                console.error(error); alert("Error: " + error.message);
+                clearInterval(timerInterval);
+            } finally { loader.style.display = 'none'; }
+        }
+
+        function drawChart(data) {
+            const ctx = document.getElementById('predictionChart').getContext('2d');
+            if (stockChart) stockChart.destroy();
+
+            // Stitch historical and future arrays together perfectly
+            const allDates = [...data.dates, ...data.future_dates];
+            const nullPadding = Array(data.dates.length - 1).fill(null);
+            
+            // Connect the lines seamlessly by sharing the last historical point
+            const lastActual = data.actual[data.actual.length - 1];
+            
+            const futureMeanPadded = [...nullPadding, lastActual, ...data.future_mean];
+            const futureUpperPadded = [...nullPadding, lastActual, ...data.future_upper];
+            const futureLowerPadded = [...nullPadding, lastActual, ...data.future_lower];
+
+            stockChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: allDates,
+                    datasets: [
+                        { label: 'Historical Actual ($)', data: data.actual, borderColor: '#00a8ff', borderWidth: 2, pointRadius: 0, order: 1 },
+                        { label: 'Historical Model Fit', data: data.predicted, borderColor: 'rgba(232, 65, 24, 0.4)', borderWidth: 1, borderDash: [4, 4], pointRadius: 0, order: 2 },
+                        { label: '1-Year Future Forecast', data: futureMeanPadded, borderColor: '#e1b12c', borderWidth: 2.5, borderDash: [6, 6], pointRadius: 0, order: 3 },
+                        { label: 'Future Risk Upper', data: futureUpperPadded, borderColor: 'transparent', backgroundColor: 'rgba(225, 177, 44, 0.15)', pointRadius: 0, fill: '+1', order: 4 },
+                        { label: 'Future Risk Lower', data: futureLowerPadded, borderColor: 'transparent', backgroundColor: 'transparent', pointRadius: 0, fill: false, order: 5 }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: { legend: { labels: { color: '#dcdde1', font: {family: 'Segoe UI'} } } },
+                    scales: { 
+                        x: { grid: {color: '#2f3640'}, ticks: {color: '#7f8fa6', maxTicksLimit: 20} }, 
+                        y: { grid: {color: '#2f3640'}, ticks: {color: '#7f8fa6'} } 
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
